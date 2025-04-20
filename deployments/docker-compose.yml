@@ -1,0 +1,35 @@
+version: "3.8"
+services:
+  # app:
+  #   build:
+  #     context: ..
+  #     dockerfile: deployments/Dockerfile
+  #   env_file:
+  #     - ../.env
+  #   ports:
+  #     - "8080:8080"
+  #   depends_on:
+  #     - db
+  #     - redis
+
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: customgpt
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   volumes:
+  #     - ../deployments/prometheus.yml:/etc/prometheus/prometheus.yml
+  #   ports:
+  #     - "9090:9090"
