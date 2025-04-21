@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
@@ -26,13 +27,14 @@ func HandleWS(c *websocket.Conn) {
 		c.WriteMessage(websocket.TextMessage, []byte("unknown GPT"))
 		return
 	}
-	model := ai.NewOpenAI(cfg.Model)
+	model := ai.NewOpenAI(cfg.Model, cfg.SystemPrompt, cfg.Files, cfg.Temperature)
 	for {
 		_, msg, err := c.ReadMessage()
 		if err != nil {
 			break
 		}
-		stream, err := model.ChatStream(context.Background(), string(msg), cfg.SystemPrompt, cfg.Temperature)
+		fmt.Println("Received message:", string(msg))
+		stream, err := model.ChatStream(context.Background(), string(msg), cfg.Temperature)
 		if err != nil {
 			c.WriteMessage(websocket.TextMessage, []byte("AI error: "+err.Error()))
 			continue

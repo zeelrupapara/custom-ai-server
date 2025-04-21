@@ -15,7 +15,7 @@ type GPTConfig struct {
 	SystemPrompt string   `yaml:"system_prompt"`
 	Files        []string `yaml:"files"`
 	RateLimit    string   `yaml:"rate_limit"`
-	Temperature  float64  `yaml:"temperature"`
+	Temperature  float32  `yaml:"temperature"`
 }
 
 // Store loaded configs
