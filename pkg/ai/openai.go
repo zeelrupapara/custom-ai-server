@@ -14,35 +14,32 @@ import (
 type OpenAI struct {
 	APIKey     string
 	Model      string
-	SystemMsgs []openai.ChatCompletionMessage
+	SystemMsgs string
 	Client     *openai.Client
 }
 
-func PrepareSystemPrompt(client *openai.Client, model, systemPrompt string, filePaths []string) ([]openai.ChatCompletionMessage, error) {
+func PrepareSystemPrompt(client *openai.Client, model, systemPrompt string, filePaths []string) (string, error) {
 	// load system messages
 	msgs := []openai.ChatCompletionMessage{{
 		Role:    openai.ChatMessageRoleSystem,
 		Content: systemPrompt,
 	}}
-
-	fmt.Println("System prompt:", systemPrompt)
-
 	// check files
 	if len(filePaths) > 0 {
 		// upload the files
 		for _, path := range filePaths {
 			f, err := os.ReadFile(path)
 			if err != nil {
-				return nil, fmt.Errorf("cannot open %s: %w", path, err)
+				return "", fmt.Errorf("cannot open %s: %w", path, err)
 			}
-			upl := openai.FileBytesRequest{
+			resp, err := client.CreateFileBytes(context.Background(), openai.FileBytesRequest{
 				Name:    filepath.Base(path),
 				Bytes:   f,
-				Purpose: openai.PurposeFineTune,
-			}
-			resp, err := client.CreateFileBytes(context.Background(), upl)
+				Purpose: "assistants",
+			})
+			fmt.Println("File upload response:", resp)
 			if err != nil {
-				return nil, fmt.Errorf("upload failed for %s: %w", path, err)
+				return "", fmt.Errorf("upload failed for %s: %w", path, err)
 			}
 
 			msgs = append(msgs, openai.ChatCompletionMessage{
@@ -61,20 +58,12 @@ func PrepareSystemPrompt(client *openai.Client, model, systemPrompt string, file
 	}
 	initResp, err := client.CreateChatCompletion(context.Background(), initReq)
 	if err != nil {
-		return nil, fmt.Errorf("initial chat failed: %w", err)
+		return "", fmt.Errorf("initial chat failed: %w", err)
 	}
 
 	fmt.Println("Initial response:", initResp.Choices[0].Message.Content)
 
-	// Append assistant's initial response to messages
-	// if len(initResp.Choices) > 0 {
-	// 	msgs = append(msgs, openai.ChatCompletionMessage{
-	// 		Role:    openai.ChatMessageRoleAssistant,
-	// 		Content: initResp.Choices[0].Message.Content,
-	// 	})
-	// }
-
-	return initReq.Messages, nil
+	return initResp.Choices[0].Message.Content, nil
 }
 
 // NewOpenAI returns an OpenAI client
@@ -89,7 +78,7 @@ func NewOpenAI(model, systemPrompt string, filePaths []string, temp float32) *Op
 	client := openai.NewClient(apiKey)
 
 	// load the system prompt and files for custom gpt agents
-	msgs, err := PrepareSystemPrompt(client, model, systemPrompt, filePaths)
+	msg, err := PrepareSystemPrompt(client, model, systemPrompt, filePaths)
 	if err != nil {
 		fmt.Println("Error while load the System Prompt", err)
 	}
@@ -98,7 +87,7 @@ func NewOpenAI(model, systemPrompt string, filePaths []string, temp float32) *Op
 		APIKey:     apiKey,
 		Model:      model,
 		Client:     client,
-		SystemMsgs: msgs,
+		SystemMsgs:  msg,
 	}
 }
 
@@ -106,7 +95,16 @@ func NewOpenAI(model, systemPrompt string, filePaths []string, temp float32) *Op
 func (o *OpenAI) ChatStream(ctx context.Context, prompt string, temp float32) (<-chan string, error) {
 	stream, err := o.Client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
 		Model:       o.Model,
-		Messages:    append(o.SystemMsgs, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: prompt}),
+		Messages:    []openai.ChatCompletionMessage{
+			{
+				Role:    openai.ChatMessageRoleSystem,
+				Content: o.SystemMsgs,
+			},
+			{
+				Role:    openai.ChatMessageRoleUser,
+				Content: prompt,
+			}, 
+		},
 		Temperature: temp,
 		Stream:      true,
 	})
@@ -131,18 +129,10 @@ func (o *OpenAI) ChatStream(ctx context.Context, prompt string, temp float32) (<
 				fmt.Println(err)
 				return
 			}
-			fmt.Println("Received message:", msg.Choices[0], msg.Choices[0].Delta.Content)
+			fmt.Println("Received message:", msg.Choices[0].Delta.Content)
 			out <- msg.Choices[0].Delta.Content
 			time.Sleep(time.Millisecond * 100)
 		}
 	}()
 	return out, nil
-}
-
-func (o *OpenAI) SystemMsgsString() string {
-	var out string
-	for _, msg := range o.SystemMsgs {
-		out += msg.Content + "\n"
-	}
-	return out
 }
