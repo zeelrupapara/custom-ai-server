@@ -19,6 +19,11 @@ type OpenAI struct {
 
 func PrepareSystemPrompt(systemPrompt string, filePaths []string) (string, error) {
 	// Load files and include their contents directly in the prompt
+
+	//
+	// problem 1: directyly including file contents in the system prompt can lead to large prompts
+	// problem 2: if the file is too large, it may exceed the token limit of the model
+	//
 	for _, path := range filePaths {
 		content, err := os.ReadFile(path)
 		if err != nil {
