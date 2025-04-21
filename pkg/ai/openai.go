@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/sashabaranov/go-openai"
 )
@@ -18,84 +17,49 @@ type OpenAI struct {
 	Client     *openai.Client
 }
 
-func PrepareSystemPrompt(client *openai.Client, model, systemPrompt string, filePaths []string) (string, error) {
-	// load system messages
-	msgs := []openai.ChatCompletionMessage{{
-		Role:    openai.ChatMessageRoleSystem,
-		Content: systemPrompt,
-	}}
-	// check files
-	if len(filePaths) > 0 {
-		// upload the files
-		for _, path := range filePaths {
-			f, err := os.ReadFile(path)
-			if err != nil {
-				return "", fmt.Errorf("cannot open %s: %w", path, err)
-			}
-			resp, err := client.CreateFileBytes(context.Background(), openai.FileBytesRequest{
-				Name:    filepath.Base(path),
-				Bytes:   f,
-				Purpose: "assistants",
-			})
-			fmt.Println("File upload response:", resp)
-			if err != nil {
-				return "", fmt.Errorf("upload failed for %s: %w", path, err)
-			}
-
-			msgs = append(msgs, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleSystem,
-				Content: fmt.Sprintf("Uploaded '%s' with ID %s", filepath.Base(path), resp.ID),
-			})
+func PrepareSystemPrompt(systemPrompt string, filePaths []string) (string, error) {
+	// Load files and include their contents directly in the prompt
+	for _, path := range filePaths {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("cannot read %s: %w", path, err)
 		}
+
+		systemPrompt += fmt.Sprintf("\n\nContent of file '%s':\n%s",
+			filepath.Base(path),
+			string(content))
 	}
 
-	// Send initial prompt+file messages to GPT to create context
-	initReq := openai.ChatCompletionRequest{
-		Model:    model,
-		Messages: msgs,
-		// temperature 0 for deterministic system setup
-		Temperature: 0,
-	}
-	initResp, err := client.CreateChatCompletion(context.Background(), initReq)
-	if err != nil {
-		return "", fmt.Errorf("initial chat failed: %w", err)
-	}
-
-	fmt.Println("Initial response:", initResp.Choices[0].Message.Content)
-
-	return initResp.Choices[0].Message.Content, nil
+	return systemPrompt, nil
 }
 
-// NewOpenAI returns an OpenAI client
+// NewOpenAI returns an OpenAI client with file contents embedded in system prompt
 func NewOpenAI(model, systemPrompt string, filePaths []string, temp float32) *OpenAI {
-	// check api key exist
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
 		panic("OPENAI_API_KEY is not set")
 	}
 
-	// connect with openai client session
-	client := openai.NewClient(apiKey)
-
-	// load the system prompt and files for custom gpt agents
-	msg, err := PrepareSystemPrompt(client, model, systemPrompt, filePaths)
+	// Embed file contents into system prompt
+	fullPrompt, err := PrepareSystemPrompt(systemPrompt, filePaths)
 	if err != nil {
-		fmt.Println("Error while load the System Prompt", err)
+		fmt.Println("Error preparing system prompt:", err)
+		os.Exit(1)
 	}
 
 	return &OpenAI{
 		APIKey:     apiKey,
 		Model:      model,
-		Client:     client,
-		SystemMsgs:  msg,
+		Client:     openai.NewClient(apiKey),
+		SystemMsgs: fullPrompt,
 	}
 }
 
-// ChatStream implements streaming chat (non‑stream stub here)
+// ChatStream implements streaming chat (simplified version)
 func (o *OpenAI) ChatStream(ctx context.Context, prompt string, temp float32) (<-chan string, error) {
 	stream, err := o.Client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
-		Model:       o.Model,
-		Messages:    []openai.ChatCompletionMessage{
+		Model: o.Model,
+		Messages: []openai.ChatCompletionMessage{
 			{
 				Role:    openai.ChatMessageRoleSystem,
 				Content: o.SystemMsgs,
@@ -103,7 +67,7 @@ func (o *OpenAI) ChatStream(ctx context.Context, prompt string, temp float32) (<
 			{
 				Role:    openai.ChatMessageRoleUser,
 				Content: prompt,
-			}, 
+			},
 		},
 		Temperature: temp,
 		Stream:      true,
@@ -126,12 +90,12 @@ func (o *OpenAI) ChatStream(ctx context.Context, prompt string, temp float32) (<
 				if errors.Is(err, context.Canceled) {
 					return
 				}
-				fmt.Println(err)
+				fmt.Println("Stream error:", err)
 				return
 			}
-			fmt.Println("Received message:", msg.Choices[0].Delta.Content)
-			out <- msg.Choices[0].Delta.Content
-			time.Sleep(time.Millisecond * 100)
+			if len(msg.Choices) > 0 {
+				out <- msg.Choices[0].Delta.Content
+			}
 		}
 	}()
 	return out, nil
