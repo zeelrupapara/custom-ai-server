@@ -2,6 +2,7 @@ package gpt
 
 import (
 	"io/ioutil"
+	"os"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
@@ -23,7 +24,7 @@ var Configs = map[string]*GPTConfig{}
 
 // LoadConfigs reads all YAML files in dir
 func LoadConfigs(dir string) error {
-	entries, err := ioutil.ReadDir(dir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
