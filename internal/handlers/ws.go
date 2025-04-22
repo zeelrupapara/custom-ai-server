@@ -27,20 +27,23 @@ func HandleWS(c *websocket.Conn) {
 		c.WriteMessage(websocket.TextMessage, []byte("unknown GPT"))
 		return
 	}
-	model := ai.NewOpenAI(cfg.Model, cfg.SystemPrompt, cfg.Files, cfg.Temperature)
+	model, err := ai.NewAI(context.Background(), cfg.Model, cfg.SystemPrompt, cfg.Name, cfg.Files)
+	if err != nil {
+		c.WriteMessage(websocket.TextMessage, []byte("AI error: "+err.Error()))
+		return
+	}
+	c.WriteMessage(websocket.TextMessage, []byte("Your assistant is ready, ask anything to "+cfg.Name))
 	for {
 		_, msg, err := c.ReadMessage()
 		if err != nil {
 			break
 		}
 		fmt.Println("Received message:", string(msg))
-		stream, err := model.ChatStream(context.Background(), string(msg), cfg.Temperature)
+		stream, err := model.Chat(context.Background(), string(msg))
 		if err != nil {
 			c.WriteMessage(websocket.TextMessage, []byte("AI error: "+err.Error()))
 			continue
 		}
-		for chunk := range stream {
-			c.WriteMessage(websocket.TextMessage, []byte(chunk))
-		}
+		c.WriteMessage(websocket.TextMessage, []byte(stream))
 	}
 }
