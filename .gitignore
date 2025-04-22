@@ -1,1 +1,7 @@
 .env
+
+# custom gpt configs 
+configs/gpts/*
+
+# uploaded files
+upload/*
