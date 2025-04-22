@@ -75,12 +75,12 @@ func (o *OpenAI) ChatStream(ctx context.Context, prompt string, temp float32) (<
 			},
 		},
 		Temperature: temp,
-		Stream:      true,
+		// Stream:      false,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("streaming chat failed: %w", err)
 	}
-
+	fmt.Println(stream.RecvRaw())
 	out := make(chan string)
 	go func() {
 		defer close(out)
