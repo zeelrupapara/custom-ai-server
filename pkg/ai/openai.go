@@ -66,7 +66,7 @@ func NewAI(ctx context.Context, assistantName, instructions, model string, files
 // Chat sends a user prompt and streams the assistant's response via stdout.
 func (ai *AI) Chat(ctx context.Context, prompt string) (string, error) {
 	// … send the user message …
-	reply, err := ai.runAssistant(ctx)
+	reply, err := ai.runAssistant(ctx, prompt)
 	if err != nil {
 		return "", err
 	}
@@ -133,6 +133,7 @@ func (ai *AI) createVectorStore(ctx context.Context, name string, fileIDs []stri
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/vector_stores", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("OpenAI-Beta", "assistants=v2")
 	ai.addAuth(req)
 
 	resp, err := ai.httpClient.Do(req)
@@ -157,21 +158,30 @@ func (ai *AI) createAssistant(ctx context.Context, name, instr, model, vsID stri
 	tools := []map[string]string{
 		{"type": "file_search"},
 		{"type": "code_interpreter"},
-		{"type": "web_search"},
-		{"type": "image_generation"},
+		// {"type": "web_search"},
+		// {"type": "image_generation"},
 	}
+
 	body := map[string]interface{}{
 		"name":         name,
 		"instructions": instr,
 		"model":        model,
 		"tools":        tools,
+		"tool_resources": map[string]interface{}{
+			"file_search": map[string]interface{}{
+				"vector_store_ids": []string{
+					vsID,
+				},
+			},
+		},
 	}
-	if vsID != "" {
-		body["vector_store_ids"] = []string{vsID}
-	}
+	// if vsID != "" {
+	// 	body["vector_store_ids"] = []string{vsID}
+	// }
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/assistants", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("OpenAI-Beta", "assistants=v2")
 	ai.addAuth(req)
 
 	resp, err := ai.httpClient.Do(req)
@@ -232,7 +242,7 @@ func (ai *AI) sendUserMessage(ctx context.Context, text string) error {
 }
 
 // runAssistant runs the assistant on the thread and streams SSE events.
-func (ai *AI) runAssistant(ctx context.Context) (string, error) {
+func (ai *AI) runAssistant(ctx context.Context, prompt string) (string, error) {
 	// Prepare the request body to trigger the assistant
 	body := map[string]string{
 		"assistant_id": ai.assistantID, // The assistant ID used to process the request
@@ -246,6 +256,7 @@ func (ai *AI) runAssistant(ctx context.Context) (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream") // Requesting an SSE stream
+	req.Header.Set("OpenAI-Beta", "assistants=v2")
 	ai.addAuth(req)                               // Add the necessary Authorization header
 
 	// Send the request
