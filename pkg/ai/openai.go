@@ -1,196 +1,307 @@
 package ai
 
 import (
-    "bytes"
-    "context"
-    "encoding/csv"
-    "fmt"
-    "io"
-    "io/ioutil"
-    "log"
-    "os"
-    "path/filepath"
-    "strings"
-    "time"
-
-    openai "github.com/openai/openai-go"
-    "github.com/openai/openai-go/option"
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"os"
+	"strings"
+	"time"
 )
 
-// AI wraps OpenAI client + our assistant resources.
+const baseURL = "https://api.openai.com/v1"
+
+// AI wraps OpenAI Assistants API interactions via native HTTP calls.
 type AI struct {
-    client        *openai.Client
-    model         string
-    vectorStoreID string
-    assistantID   string
+	APIKey      string
+	httpClient  *http.Client
+	assistantID string
+	threadID    string
 }
 
-// NewAI will:
-// 1. Init client
-// 2. Create vector store named `vsName`
-// 3. Upload all files (CSV → text if needed) into it
-// 4. Create an assistant named `assistantName` using `model`
-//    with File Search, Code Interpreter, Web Search, Image Gen tools
-// 5. Return an *AI you can immediately call Chat() on.
-func NewAI(ctx context.Context, model, systemPrompt, assistantName string, filePaths []string) (*AI, error) {
-    // 0️⃣ Get API key
-    apiKey := os.Getenv("OPENAI_API_KEY")
-    if apiKey == "" {
-        return nil, fmt.Errorf("OPENAI_API_KEY not set")
-    }
+// NewAI initializes an AI client, uploads files, creates a vector store, and creates an assistant.
+// It returns an *AI with assistantID set, ready for chat.
+func NewAI(ctx context.Context, assistantName, instructions, model string, files []string) (*AI, error) {
+	key := os.Getenv("OPENAI_API_KEY")
+	if key == "" {
+		return nil, fmt.Errorf("OPENAI_API_KEY environment variable not set")
+	}
+	client := &http.Client{Timeout: 60 * time.Second}
+	ai := &AI{APIKey: key, httpClient: client}
 
-    // 1️⃣ Init client
-    client := openai.NewClient(option.WithAPIKey(apiKey))
-    client.Config.AssistantVersion = "v2" // enable Assistants API v2
+	// 1. Upload files and collect file IDs
+	var fileIDs []string
+	for _, path := range files {
+		id, err := ai.uploadFile(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("upload file %s: %w", path, err)
+		}
+		fileIDs = append(fileIDs, id)
+	}
 
-    // Prepare AI struct
-    ai := &AI{client: &client, model: model}
+	// 2. Create vector store if any files uploaded
+	var vsID string
+	if len(fileIDs) > 0 {
+		id, err := ai.createVectorStore(ctx, "assistant-vectorstore", fileIDs)
+		if err != nil {
+			return nil, fmt.Errorf("create vector store: %w", err)
+		}
+		vsID = id
+	}
 
-    // 2️⃣ Create assistant with default tools
-    log.Printf("Creating assistant %q with model %s", assistantName, model)
-    asst, err := client.Beta.Assistants.New(ctx, openai.BetaAssistantNewParams{
-        Name:         openai.String(assistantName),
-        Model:        model,
-        Instructions: openai.String(systemPrompt),
-        Tools: []openai.AssistantToolUnionParam{
-            {OfFileSearch: &openai.FileSearchToolParam{}},
-            {OfCodeInterpreter: &openai.CodeInterpreterToolParam{}},
-            {OfWebBrowser: &openai.WebBrowserToolParam{}},
-            {OfImageGeneration: &openai.ImageGenerationToolParam{}},
-        },
-    })
-    if err != nil {
-        return nil, fmt.Errorf("assistant creation: %w", err)
-    }
-    log.Printf("🤖 Assistant %q created (ID=%s)", assistantName, asst.ID)
-    ai.assistantID = asst.ID
-
-    // 3️⃣ Create vector store
-    vsName := fmt.Sprintf("store-%s-%s", model, assistantName)
-    vs, err := client.VectorStores.New(ctx, openai.VectorStoreNewParams{Name: openai.String(vsName)})
-    if err != nil {
-        return nil, fmt.Errorf("vector store creation: %w", err)
-    }
-    log.Printf("🗄️  Vector store %q created (ID=%s)", vsName, vs.ID)
-    ai.vectorStoreID = vs.ID
-
-    // 4️⃣ Upload files
-    var fileIDs []string
-    for _, p := range filePaths {
-        // convert CSV to text
-        uploadName := filepath.Base(p)
-        data, err := ioutil.ReadFile(p)
-        if err != nil {
-            return nil, fmt.Errorf("open %s: %w", p, err)
-        }
-        if strings.EqualFold(filepath.Ext(p), ".csv") {
-            log.Printf("Converting CSV %q to plain text", p)
-            data, err = csvToText(data)
-            if err != nil {
-                return nil, fmt.Errorf("csv→text %s: %w", p, err)
-            }
-            uploadName = strings.TrimSuffix(uploadName, ".csv") + ".txt"
-        }
-
-        log.Printf("📁 Uploading %s (size=%d)", uploadName, len(data))
-        bf := bytes.NewReader(data)
-        file, err := client.Files.Upload(ctx, openai.FileNewParams{
-            Purpose: openai.FilePurposeAssistants,
-            File:    bf,
-            Name:    openai.String(uploadName),
-        })
-        if err != nil {
-            return nil, fmt.Errorf("upload %s: %w", uploadName, err)
-        }
-        fileIDs = append(fileIDs, file.ID)
-        log.Printf("   → file ID=%s", file.ID)
-    }
-
-    // Associate all uploaded files with the vector store
-    _, err = client.VectorStores.Files.Add(ctx, ai.vectorStoreID, openai.VectorStoreFilesAddParams{
-        FileIDs: fileIDs,
-    })
-    if err != nil {
-        return nil, fmt.Errorf("add files to vector store: %w", err)
-    }
-
-    // Update assistant so File Search can use this VS
-    _, err = client.Beta.Assistants.Update(ctx, openai.BetaAssistantUpdateParams{
-        AssistantID: asst.ID,
-        ToolResources: openai.BetaAssistantUpdateParamsToolResources{
-            FileSearch: openai.BetaAssistantUpdateParamsToolResourcesFileSearch{
-                VectorStoreIDs: []string{ai.vectorStoreID},
-            },
-        },
-    })
-    if err != nil {
-        return nil, fmt.Errorf("assistant update: %w", err)
-    }
-
-    return ai, nil
+	// 3. Create assistant with all tools enabled
+	asstID, err := ai.createAssistant(ctx, assistantName, instructions, model, vsID)
+	if err != nil {
+		return nil, fmt.Errorf("create assistant: %w", err)
+	}
+	ai.assistantID = asstID
+	return ai, nil
 }
 
-// Chat sends a single user query and returns the assistant's reply.
-func (ai *AI) Chat(ctx context.Context, question string) (string, error) {
-    // 1️⃣ Create thread with user message
-    thr, err := ai.client.Beta.Threads.New(ctx, openai.BetaThreadNewParams{
-        Messages: []openai.BetaThreadNewParamsMessage{
-            {
-                Role: "user",
-                Content: openai.BetaThreadNewParamsMessageContentUnion{
-                    OfString: openai.String(question),
-                },
-            },
-        },
-    })
-    if err != nil {
-        return "", fmt.Errorf("create thread: %w", err)
-    }
-
-    // 2️⃣ Run assistant on thread
-    run, err := ai.client.Beta.Threads.Runs.NewAndPoll(ctx, thr.ID, openai.BetaThreadRunNewParams{
-        AssistantID: ai.assistantID,
-    }, 0)
-    if err != nil {
-        return "", fmt.Errorf("assistant run: %w", err)
-    }
-
-    // 3️⃣ Retrieve assistant’s reply
-    page, err := ai.client.Beta.Threads.Messages.List(ctx, thr.ID, openai.BetaThreadMessageListParams{})
-    if err != nil {
-        return "", fmt.Errorf("list messages: %w", err)
-    }
-
-    var resp string
-    for _, m := range page.Data {
-        if m.Role == "assistant" {
-            for _, c := range m.Content {
-                if c.Type == "text" {
-                    resp += c.Text.Value
-                }
-            }
-        }
-    }
-    if strings.TrimSpace(resp) == "" {
-        return "", fmt.Errorf("assistant returned empty response")
-    }
-    return resp, nil
+// Chat sends a user prompt and streams the assistant's response via stdout.
+func (ai *AI) Chat(ctx context.Context, prompt string) (string, error) {
+	// … send the user message …
+	reply, err := ai.runAssistant(ctx)
+	if err != nil {
+		return "", err
+	}
+	return reply, nil
 }
 
-// csvToText converts raw CSV bytes to plain text for better embeddings.
-func csvToText(data []byte) ([]byte, error) {
-    r := csv.NewReader(bytes.NewReader(data))
-    var b strings.Builder
-    for {
-        record, err := r.Read()
-        if err == io.EOF {
-            break
-        }
-        if err != nil {
-            return nil, err
-        }
-        b.WriteString(strings.Join(record, " "))
-        b.WriteByte('\n')
-    }
-    return []byte(b.String()), nil
+// uploadFile uploads a file (converts CSV to text) and returns the file ID.
+func (ai *AI) uploadFile(ctx context.Context, filePath string) (string, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	reader := io.Reader(f)
+	filename := filePath
+	// CSV conversion
+	if strings.HasSuffix(strings.ToLower(filePath), ".csv") {
+		buf := &bytes.Buffer{}
+		s := bufio.NewScanner(f)
+		for s.Scan() {
+			line := s.Text()
+			buf.WriteString(strings.ReplaceAll(line, ",", "\t") + "\n")
+		}
+		if err := s.Err(); err != nil {
+			return "", err
+		}
+		reader = buf
+		filename = filename + ".txt"
+	}
+
+	// multipart form
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+	fw, _ := mw.CreateFormFile("file", filename)
+	io.Copy(fw, reader)
+	mw.WriteField("purpose", "assistants")
+	mw.Close()
+
+	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/files", body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	ai.addAuth(req)
+
+	resp, err := ai.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("file upload failed: %s", msg)
+	}
+
+	var out struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	return out.ID, nil
+}
+
+// createVectorStore creates a vector store from file IDs.
+func (ai *AI) createVectorStore(ctx context.Context, name string, fileIDs []string) (string, error) {
+	body := map[string]interface{}{"name": name, "file_ids": fileIDs}
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/vector_stores", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	ai.addAuth(req)
+
+	resp, err := ai.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("vector store failed: %s", msg)
+	}
+
+	var out struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	return out.ID, nil
+}
+
+// createAssistant creates an assistant with tools and optional vector store.
+func (ai *AI) createAssistant(ctx context.Context, name, instr, model, vsID string) (string, error) {
+	tools := []map[string]string{
+		{"type": "file_search"},
+		{"type": "code_interpreter"},
+		{"type": "web_search"},
+		{"type": "image_generation"},
+	}
+	body := map[string]interface{}{
+		"name":         name,
+		"instructions": instr,
+		"model":        model,
+		"tools":        tools,
+	}
+	if vsID != "" {
+		body["vector_store_ids"] = []string{vsID}
+	}
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/assistants", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	ai.addAuth(req)
+
+	resp, err := ai.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("assistant creation failed: %s", msg)
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	return out.ID, nil
+}
+
+// createThread starts a new conversation thread.
+func (ai *AI) createThread(ctx context.Context) (string, error) {
+	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/threads", nil)
+	ai.addAuth(req)
+
+	resp, err := ai.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("thread creation failed: %s", msg)
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	return out.ID, nil
+}
+
+// sendUserMessage posts user input to the thread.
+func (ai *AI) sendUserMessage(ctx context.Context, text string) error {
+	body := map[string]interface{}{"role": "user", "content": text}
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/threads/"+ai.threadID+"/messages", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	ai.addAuth(req)
+
+	resp, err := ai.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("send message failed: %s", msg)
+	}
+	return nil
+}
+
+// runAssistant runs the assistant on the thread and streams SSE events.
+func (ai *AI) runAssistant(ctx context.Context) (string, error) {
+	// Prepare the request body to trigger the assistant
+	body := map[string]string{
+		"assistant_id": ai.assistantID, // The assistant ID used to process the request
+	}
+	b, _ := json.Marshal(body)
+
+	// Create the request for the assistant run
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/threads/"+ai.threadID+"/runs", bytes.NewReader(b))
+	if err != nil {
+		return "", fmt.Errorf("create request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream") // Requesting an SSE stream
+	ai.addAuth(req)                               // Add the necessary Authorization header
+
+	// Send the request
+	resp, err := ai.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Set up a buffer to read the SSE stream response
+	reader := bufio.NewReader(resp.Body)
+	var answer strings.Builder
+
+	// Read the response line by line
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break // End of the stream, exit loop
+			}
+			return "", fmt.Errorf("read error: %w", err)
+		}
+
+		// Look for data: lines in the SSE stream
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		// Parse the data (expected JSON content)
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+		if data == "[DONE]" {
+			break // Stream completed, exit loop
+		}
+
+		var evt struct {
+			Type  string `json:"type"`
+			Delta struct {
+				Content string `json:"content"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(data), &evt); err != nil {
+			// If JSON parsing fails, continue to the next event
+			continue
+		}
+
+		// Append the content from delta to the final answer
+		if evt.Type == "delta" && evt.Delta.Content != "" {
+			answer.WriteString(evt.Delta.Content)
+		}
+	}
+
+	// Return the full answer accumulated from the stream
+	return answer.String(), nil
+}
+
+// addAuth attaches the Authorization header.
+func (ai *AI) addAuth(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+ai.APIKey)
 }

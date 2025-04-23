@@ -27,7 +27,7 @@ func HandleWS(c *websocket.Conn) {
 		c.WriteMessage(websocket.TextMessage, []byte("unknown GPT"))
 		return
 	}
-	model, err := ai.NewAI(context.Background(), cfg.Model, cfg.SystemPrompt, cfg.Name, cfg.Files)
+	model, err := ai.NewAI(context.Background(), cfg.Name, cfg.Model, cfg.SystemPrompt, cfg.Files)
 	if err != nil {
 		c.WriteMessage(websocket.TextMessage, []byte("AI error: "+err.Error()))
 		return
