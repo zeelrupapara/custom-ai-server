@@ -1,64 +1,56 @@
 package utils
 
 import (
+	"encoding/csv"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-// CSVToText checks for an existing .txt alongside the given .csv file.
-// If the .txt exists, it simply returns its path.
-// Otherwise it reads the CSV and writes its contents into a new .txt file.
-func CSVToText(inputPath string) (string, error) {
-	// 1. Determine actual CSV path
-	ext := filepath.Ext(inputPath)
-	var csvPath string
-	if ext == "" {
-		csvPath = inputPath + ".csv"
-	} else {
-		csvPath = inputPath
-	}
+// ConvertCSVToTxt checks if a .txt version exists. If yes, returns its path.
+// Otherwise, converts the .csv file to .txt and returns the new path.
+func ConvertCSVToTxt(csvPath string) (string, error) {
+	// Derive the .txt path from the .csv path
+	txtPath := strings.TrimSuffix(csvPath, filepath.Ext(csvPath)) + ".txt"
 
-	// 2. Verify the CSV file exists
-	if info, err := os.Stat(csvPath); err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("CSV file not found: %s", csvPath)
-		}
-		return "", fmt.Errorf("checking CSV file: %w", err)
-	} else if info.IsDir() {
-		return "", fmt.Errorf("expected a file but found a directory: %s", csvPath)
-	}
-
-	// 3. Derive the .txt path
-	base := strings.TrimSuffix(csvPath, filepath.Ext(csvPath))
-	txtPath := base + ".txt"
-
-	// 4. If .txt already exists, return it immediately
+	// Check if the .txt file already exists
 	if _, err := os.Stat(txtPath); err == nil {
+		// File exists, return its path
 		return txtPath, nil
 	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("checking TXT file: %w", err)
+		// Other error while checking
+		return "", fmt.Errorf("error checking txt file existence: %w", err)
 	}
 
-	// 5. Copy contents from CSV → TXT
-	inFile, err := os.Open(csvPath)
+	// Open the CSV file
+	file, err := os.Open(csvPath)
 	if err != nil {
-		return "", fmt.Errorf("opening CSV for read: %w", err)
+		return "", fmt.Errorf("failed to open CSV file: %w", err)
 	}
-	defer inFile.Close()
+	defer file.Close()
 
-	outFile, err := os.Create(txtPath)
+	// Parse the CSV
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
 	if err != nil {
-		return "", fmt.Errorf("creating TXT for write: %w", err)
+		return "", fmt.Errorf("failed to read CSV data: %w", err)
 	}
-	defer outFile.Close()
 
-	if _, err := io.Copy(outFile, inFile); err != nil {
-		return "", fmt.Errorf("writing TXT file: %w", err)
+	// Create the .txt file
+	txtFile, err := os.Create(txtPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create TXT file: %w", err)
+	}
+	defer txtFile.Close()
+
+	// Write CSV rows as tab-separated lines
+	for _, record := range records {
+		line := strings.Join(record, "\t") + "\n"
+		if _, err := txtFile.WriteString(line); err != nil {
+			return "", fmt.Errorf("failed to write to TXT file: %w", err)
+		}
 	}
 
 	return txtPath, nil
 }
-

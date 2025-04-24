@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/zeelrupapara/custom-ai-server/pkg/utils"
 )
 
 // AI struct holds the assistant and thread context for interacting with OpenAI Assistants API.
@@ -74,6 +75,15 @@ func NewAI(ctx context.Context, assistantName, instructions, model string, files
 	fileIDs := []string{}
 	for _, filePath := range files {
 		fileName := filePath
+		// check file is csv then convert to txt file
+		if strings.HasSuffix(filePath, ".csv") {
+			filePath, err := utils.ConvertCSVToTxt(filePath)
+			if err != nil {
+				baseLog.WithError(err).Error("Failed to convert CSV to TXT")
+				return nil, err
+			}
+			fileName = filePath
+		}
 		baseLog := baseLog.WithField("file", fileName)
 		f, err := os.Open(filePath)
 		if err != nil {
