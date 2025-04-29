@@ -102,7 +102,7 @@ system_prompt: |
   Be business-minded: Speak as if advising a dispensary owner or operator looking to grow.
 
 files: 
-  - "upload/greenlync.txt"
+  - "upload/greenlync.csv"
 
 # ────────────────────────────────────────────────────────────────────────────
 # Rate limits & sampling

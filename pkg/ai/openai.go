@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	log "github.com/sirupsen/logrus"
-	"github.com/zeelrupapara/custom-ai-server/pkg/utils"
 )
 
 // AI struct holds the assistant and thread context for interacting with OpenAI Assistants API.
@@ -72,19 +71,9 @@ func NewAI(ctx context.Context, assistantName, instructions, model string, files
 	}
 
 	// Step 1: Upload files (if any) with purpose "assistants"
-	fileIDs := []string{}
+	fileIdMappedTools := map[string][]string{}
 	for _, filePath := range files {
-		fileName := filePath
-		// check file is csv then convert to txt file
-		if strings.HasSuffix(filePath, ".csv") {
-			filePath, err := utils.ConvertCSVToTxt(filePath)
-			if err != nil {
-				baseLog.WithError(err).Error("Failed to convert CSV to TXT")
-				return nil, err
-			}
-			fileName = filePath
-		}
-		baseLog := baseLog.WithField("file", fileName)
+		baseLog := baseLog.WithField("file", filePath)
 		f, err := os.Open(filePath)
 		if err != nil {
 			baseLog.WithError(err).Error("Failed to open file for upload")
@@ -100,7 +89,7 @@ func NewAI(ctx context.Context, assistantName, instructions, model string, files
 			return nil, fmt.Errorf("write purpose field: %w", err)
 		}
 		// Create file field
-		part, err := writer.CreateFormFile("file", fileName)
+		part, err := writer.CreateFormFile("file", filePath)
 		if err != nil {
 			baseLog.WithError(err).Error("Failed to create multipart file field")
 			return nil, fmt.Errorf("create multipart file field: %w", err)
@@ -145,13 +134,18 @@ func NewAI(ctx context.Context, assistantName, instructions, model string, files
 			baseLog.WithError(err).Error("Failed to decode file upload response")
 			return nil, fmt.Errorf("decode file upload: %w", err)
 		}
-		fileIDs = append(fileIDs, fileResp.ID)
+		// check is file is csb then mapped to the perticular tool type
+		if strings.Contains(strings.ToLower(filePath), "csv") {
+			fileIdMappedTools["code_interpreter"] = append(fileIdMappedTools["code_interpreter"], fileResp.ID)
+		}else {
+			fileIdMappedTools["file_search"] = append(fileIdMappedTools["file_search"], fileResp.ID)
+		}
 		baseLog.WithField("file_id", fileResp.ID).Info("Uploaded file successfully")
 	}
 
 	body := map[string]interface{}{
 		"name":     ai.name,
-		"file_ids": fileIDs,
+		"file_ids": fileIdMappedTools["file_search"],
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -191,41 +185,13 @@ func NewAI(ctx context.Context, assistantName, instructions, model string, files
 		"tools": []map[string]interface{}{
 			{"type": "code_interpreter"},
 			{"type": "file_search"},
-			// Custom function tool: web search
-			// {
-			// 	"type": "function",
-			// 	"function": map[string]interface{}{
-			// 		"name":        "web_search",
-			// 		"description": "Searches the web for the given query and returns a summary of results.",
-			// 		"parameters": map[string]interface{}{
-			// 			"type":       "object",
-			// 			"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string", "description": "The search query string."}},
-			// 			"required":   []string{"query"},
-			// 		},
-			// 		"strict": true,
-			// 	},
-			// },
-			// // Custom function tool: image generation
-			// {
-			// 	"type": "function",
-			// 	"function": map[string]interface{}{
-			// 		"name":        "generate_image",
-			// 		"description": "Generates an image based on the given description.",
-			// 		"parameters": map[string]interface{}{
-			// 			"type":       "object",
-			// 			"properties": map[string]interface{}{"prompt": map[string]interface{}{"type": "string", "description": "Description of the image to generate."}},
-			// 			"required":   []string{"prompt"},
-			// 		},
-			// 		"strict": true,
-			// 	},
-			// },
 		},
 	}
-	// If files were uploaded, associate them with the tools
-	if len(fileIDs) > 0 {
+	// So check the file is csv than add in the code_interpreter
+	if len(fileIdMappedTools["code_interpreter"]) > 0 || len(fileIdMappedTools["file_search"]) > 0 {
 		assistantBody["tool_resources"] = map[string]interface{}{
-			// "code_interpreter": map[string]interface{}{"vector_store_ids": []string{out.ID}},
-			"file_search":      map[string]interface{}{"vector_store_ids": []string{out.ID}},
+			"code_interpreter": map[string]interface{}{"file_ids": fileIdMappedTools["code_interpreter"]},
+			"file_search": map[string]interface{}{"vector_store_ids": []string{out.ID}},
 		}
 	}
 
@@ -496,6 +462,7 @@ func (ai *AI) Chat(ctx context.Context, prompt string) (string, error) {
 								for _, part := range msgDelta.Delta.Content {
 									switch part.Type {
 									case "text":
+										fmt.Println("-----> part.Text.Value", part.Text)
 										if part.Text != nil {
 											finalAnswer.WriteString(part.Text.Value)
 										}
@@ -525,6 +492,7 @@ func (ai *AI) Chat(ctx context.Context, prompt string) (string, error) {
 								}
 							} else {
 								// Fallback: if unmarshal fails, treat data as raw text
+								fmt.Println("-----> dataStr", dataStr)
 								finalAnswer.WriteString(dataStr)
 							}
 							// If we were in a code block and the next content is not code, we will close it
