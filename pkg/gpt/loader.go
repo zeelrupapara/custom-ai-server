@@ -1,7 +1,6 @@
 package gpt
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -33,7 +32,7 @@ func LoadConfigs(dir string) error {
 			continue
 		}
 		path := filepath.Join(dir, f.Name())
-		data, err := ioutil.ReadFile(path)
+		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
