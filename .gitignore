@@ -5,3 +5,6 @@ configs/gpts/*
 
 # uploaded files
 upload/*
+
+# bins
+bin/*

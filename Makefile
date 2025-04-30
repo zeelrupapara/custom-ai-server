@@ -2,7 +2,7 @@
 
 build:
 	go mod tidy
-	go build -o bin/server ./cmd/server
+	go build -o bin/server ./cmd
 
 test:
 	go test ./pkg/... ./internal/handlers
