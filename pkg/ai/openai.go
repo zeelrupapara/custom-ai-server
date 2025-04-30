@@ -10,10 +10,53 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
 )
+
+var codeInterpreterSupportedExts = map[string]bool{
+	".c":    true,
+	".cpp":  true,
+	".cs":   true,
+	".csv":  true,
+	".json": true,
+	".md":   true,
+	".py":   true,
+	".rb":   true,
+	".tex":  true,
+	".txt":  true,
+	".css":  true,
+	".js":   true,
+	".ts":   true,
+	".html": true,
+	".java": true,
+	".php":  true,
+	".sh":   true,
+	".xml":  true,
+	".xlsx": true,
+}
+
+var fileSearchSupportedExts = map[string]bool{
+    ".c":     true,
+    ".cpp":   true,
+    ".cs":    true,
+    ".css":   true,
+    ".go":    true,
+    ".html":  true,
+    ".java":  true,
+    ".js":    true,
+    ".json":  true,
+    ".md":    true,
+    ".php":   true,
+    ".py":    true,
+    ".rb":    true,
+    ".sh":    true,
+    ".tex":   true,
+    ".ts":    true,
+    ".txt":   true,
+}
 
 // AI struct holds the assistant and thread context for interacting with OpenAI Assistants API.
 type AI struct {
@@ -135,10 +178,14 @@ func NewAI(ctx context.Context, assistantName, instructions, model string, files
 			return nil, fmt.Errorf("decode file upload: %w", err)
 		}
 		// check is file is csb then mapped to the perticular tool type
-		if strings.Contains(strings.ToLower(filePath), "csv") {
+		ext := strings.ToLower(filepath.Ext(filePath))
+		if codeInterpreterSupportedExts[ext] {
 			fileIdMappedTools["code_interpreter"] = append(fileIdMappedTools["code_interpreter"], fileResp.ID)
-		}else {
+		} else if (fileSearchSupportedExts[ext]) {
 			fileIdMappedTools["file_search"] = append(fileIdMappedTools["file_search"], fileResp.ID)
+		} else {
+			fmt.Println("Unsupported file extension", ext)
+			continue
 		}
 		baseLog.WithField("file_id", fileResp.ID).Info("Uploaded file successfully")
 	}
@@ -191,7 +238,7 @@ func NewAI(ctx context.Context, assistantName, instructions, model string, files
 	if len(fileIdMappedTools["code_interpreter"]) > 0 || len(fileIdMappedTools["file_search"]) > 0 {
 		assistantBody["tool_resources"] = map[string]interface{}{
 			"code_interpreter": map[string]interface{}{"file_ids": fileIdMappedTools["code_interpreter"]},
-			"file_search": map[string]interface{}{"vector_store_ids": []string{out.ID}},
+			"file_search":      map[string]interface{}{"vector_store_ids": []string{out.ID}},
 		}
 	}
 
