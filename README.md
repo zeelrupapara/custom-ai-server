@@ -2,6 +2,8 @@
 
 Now u can use your model and create custom specialized GPT
 
+New Strcuture Docs: https://chatgpt.com/s/dr_6813180d0b248191ab394a56ef08ab3e
+
 ```
 System Components:
 1) Admin-Only Custom GPT Configuration
