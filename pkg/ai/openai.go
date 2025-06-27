@@ -39,23 +39,23 @@ var codeInterpreterSupportedExts = map[string]bool{
 }
 
 var fileSearchSupportedExts = map[string]bool{
-    ".c":     true,
-    ".cpp":   true,
-    ".cs":    true,
-    ".css":   true,
-    ".go":    true,
-    ".html":  true,
-    ".java":  true,
-    ".js":    true,
-    ".json":  true,
-    ".md":    true,
-    ".php":   true,
-    ".py":    true,
-    ".rb":    true,
-    ".sh":    true,
-    ".tex":   true,
-    ".ts":    true,
-    ".txt":   true,
+	".c":    true,
+	".cpp":  true,
+	".cs":   true,
+	".css":  true,
+	".go":   true,
+	".html": true,
+	".java": true,
+	".js":   true,
+	".json": true,
+	".md":   true,
+	".php":  true,
+	".py":   true,
+	".rb":   true,
+	".sh":   true,
+	".tex":  true,
+	".ts":   true,
+	".txt":  true,
 }
 
 // AI struct holds the assistant and thread context for interacting with OpenAI Assistants API.
@@ -66,6 +66,17 @@ type AI struct {
 	instructions string       // System instructions for the assistant
 	name         string       // Assistant name (if any)
 	client       *http.Client // HTTP client for API requests
+}
+
+type BingAnswer struct {
+	WebPages struct {
+		Value []struct {
+			Name    string `json:"name"`
+			URL     string `json:"url"` // <-- Include URL field
+			Snippet string `json:"snippet"`
+		} `json:"value"`
+		WebSearchURL string `json:"webSearchUrl"` // Optional: link to full search results
+	} `json:"webPages"`
 }
 
 // NewAI initializes a new AI assistant with the given name, instructions, model, and optional files.
@@ -181,7 +192,7 @@ func NewAI(ctx context.Context, assistantName, instructions, model string, files
 		ext := strings.ToLower(filepath.Ext(filePath))
 		if codeInterpreterSupportedExts[ext] {
 			fileIdMappedTools["code_interpreter"] = append(fileIdMappedTools["code_interpreter"], fileResp.ID)
-		} else if (fileSearchSupportedExts[ext]) {
+		} else if fileSearchSupportedExts[ext] {
 			fileIdMappedTools["file_search"] = append(fileIdMappedTools["file_search"], fileResp.ID)
 		} else {
 			fmt.Println("Unsupported file extension", ext)
@@ -232,6 +243,20 @@ func NewAI(ctx context.Context, assistantName, instructions, model string, files
 		"tools": []map[string]interface{}{
 			{"type": "code_interpreter"},
 			{"type": "file_search"},
+			{
+				"name":        "web_search",
+				"description": "Search the web and return top relevant results",
+				"parameters": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"query": map[string]interface{}{
+							"type":        "string",
+							"description": "Search query",
+						},
+					},
+					"required": []string{"query"},
+				},
+			},
 		},
 	}
 	// So check the file is csv than add in the code_interpreter
@@ -584,24 +609,16 @@ func (ai *AI) Chat(ctx context.Context, prompt string) (string, error) {
 									_ = json.Unmarshal([]byte(fArgs), &argsMap)
 									// Execute the corresponding tool
 									switch fName {
-									// case "web_search":
-									// 	// Web search tool: perform a web search for the query and return a summary.
-									// 	query, _ := argsMap["query"].(string)
-									// 	if query == "" {
-									// 		output = map[string]interface{}{
-									// 			"error": "missing query",
-									// 		}
-									// 		baseLog.Warn("Web search called with empty query")
-									// 	} else {
-									// 		baseLog.Info("Performing web search for query")
-									// 		// *** Placeholder for actual web search integration ***
-									// 		// For demonstration, we simulate search results.
-									// 		simulatedResult := fmt.Sprintf("Top result for '%s': Example result snippet.", query)
-									// 		output = map[string]interface{}{
-									// 			"results": []string{simulatedResult},
-									// 		}
-									// 		baseLog.Info("Web search completed (simulated result)")
-									// 	}
+									case "web_search":
+										// Web search tool: perform a web search for the query and return a summary.
+										q, _ := argsMap["query"].(string)
+										baseLog.Infof("Performing actual search: %q", q)
+										results, err := callSearchAPI(ctx, ai.client, apiKey, q)
+										if err != nil {
+											output = map[string]interface{}{"error": err.Error()}
+										} else {
+											output = map[string]interface{}{"results": results}
+										}
 									// case "generate_image":
 									// 	// Image generation tool: use OpenAI Image API to generate an image and return file ID.
 									// 	prompt, _ := argsMap["prompt"].(string)
@@ -792,4 +809,34 @@ func (ai *AI) Chat(ctx context.Context, prompt string) (string, error) {
 	baseLog.WithField("assistant_response", assistantResponse).Info("Received assistant response")
 	// The final answer is already formatted in Markdown as we constructed (code blocks, etc.)
 	return assistantResponse, nil
+}
+
+func callSearchAPI(ctx context.Context, client *http.Client, apiKey, query string) ([]string, error) {
+	endpoint := "https://api.bing.microsoft.com/v7.0/search"
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	qParams := req.URL.Query()
+	qParams.Add("q", query)
+	req.URL.RawQuery = qParams.Encode()
+	req.Header.Set("Ocp-Apim-Subscription-Key", apiKey)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var ans BingAnswer
+	if err := json.NewDecoder(resp.Body).Decode(&ans); err != nil {
+		return nil, err
+	}
+
+	results := make([]string, 0, len(ans.WebPages.Value))
+	for _, item := range ans.WebPages.Value {
+		results = append(results, fmt.Sprintf("[%s](%s) — %s",
+			item.Name, item.URL, item.Snippet))
+	}
+	return results, nil
 }
